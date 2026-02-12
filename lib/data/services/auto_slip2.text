@@ -1,0 +1,169 @@
+// lib/data/services/auto_slip_manager.dart
+
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
+import '../models/transaction_model.dart';
+import 'database_helper.dart';
+
+class SlipCandidate {
+  final AssetEntity asset;
+  final String bankName;
+
+  SlipCandidate({required this.asset, required this.bankName});
+}
+
+class AutoSlipManager {
+  static const String _prefLastCheckKey = "last_slip_auto_scan_time";
+
+  static const Map<String, String> _bankMapping = {
+    "K PLUS": "KBank",
+    "SCB EASY": "SCB",
+    "Krungthai NEXT": "KTB",
+    "BualuangM": "BBL",
+    "KMA": "Krungsri",
+    "ttb touch": "TTB",
+    "MyMo": "GSB",
+  };
+
+  final DatabaseHelper _dbHelper = DatabaseHelper.instance;
+  final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+
+  Future<List<SlipCandidate>> scanForNewSlips() async {
+    final PermissionState ps = await PhotoManager.requestPermissionExtend();
+    if (!ps.isAuth && ps != PermissionState.limited) return [];
+
+    final prefs = await SharedPreferences.getInstance();
+    // ดึงย้อนหลัง 14 วันถ้าไม่มีค่าบันทึกไว้
+    int lastCheckTime = prefs.getInt(_prefLastCheckKey) ??
+        DateTime.now().subtract(const Duration(days: 14)).millisecondsSinceEpoch;
+    DateTime checkSince2 = DateTime.fromMillisecondsSinceEpoch(lastCheckTime);
+    DateTime checkSince = DateTime(2025, 1, 1);
+
+    List<SlipCandidate> foundSlips = [];
+    final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(type: RequestType.image);
+
+    for (var album in albums) {
+      if (_bankMapping.containsKey(album.name)) {
+        final List<AssetEntity> photos = await album.getAssetListRange(start: 0, end: 50);
+        for (var photo in photos) {
+          if (photo.createDateTime.isAfter(checkSince)) {
+            foundSlips.add(SlipCandidate(asset: photo, bankName: _bankMapping[album.name]!));
+          }
+        }
+      }
+    }
+
+    foundSlips.sort((a, b) => a.asset.createDateTime.compareTo(b.asset.createDateTime));
+    return foundSlips;
+  }
+
+  Future<int> processAndSaveSlips(List<SlipCandidate> slips, {Function(int current, int total)? onProgress}) async {
+    if (slips.isEmpty) return 0;
+
+    final prefs = await SharedPreferences.getInstance();
+    final String deviceId = prefs.getString('device_id') ?? 'unknown_device';
+    final String payerName = prefs.getString('user_name') ?? 'Me';
+
+    int savedCount = 0;
+    int current = 0;
+
+    for (var slip in slips) {
+      current++;
+      if (onProgress != null) onProgress(current, slips.length);
+
+      try {
+        final File? file = await slip.asset.file;
+        if (file == null) continue;
+
+        if (await _isDuplicate(file.path, slip.asset.createDateTime)) continue;
+
+        final inputImage = InputImage.fromFilePath(file.path);
+        final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+
+        // กรองยอดเงินด้วย Logic ที่แม่นยำขึ้น
+        double? amount = _extractAmount(recognizedText.text, slip.bankName);
+
+        if (amount != null) {
+          final newTxn = TransactionModel(
+            id: const Uuid().v4(),
+            amount: amount,
+            date: slip.asset.createDateTime,
+            category: "รายจ่าย",
+            // ✅ ปรับ Note เป็นชื่อสลิปตามธนาคาร
+            note: "สลิป ${slip.bankName}",
+            recipientName: null, // ไม่เก็บชื่อผู้รับเพราะ OCR ไม่นิ่ง
+            receiptPath: file.path,
+            payerName: payerName,
+            deviceId: deviceId,
+            isSplitBill: false,
+            isSynced: false,
+            isDeleted: false,
+          );
+
+          await _dbHelper.createTransaction(newTxn);
+          savedCount++;
+        }
+      } catch (e) {
+        debugPrint("❌ Error processing slip: $e");
+      }
+    }
+
+    await prefs.setInt(_prefLastCheckKey, DateTime.now().millisecondsSinceEpoch);
+    return savedCount;
+  }
+
+  double? _extractAmount(String text, String bankName) {
+    List<String> lines = text.split('\n');
+    final amountRegex = RegExp(r'[\d,]+\.\d{2}');
+    double? bestAmount;
+
+    for (var line in lines) {
+      // ตัดบรรทัดที่ไม่เกี่ยวกับยอดเงินออกเพื่อความแม่นยำ
+      if (line.contains('ค่าธรรมเนียม') || line.contains('Fee') ||
+          line.contains('Balance') || line.contains('คงเหลือ') ||
+          line.contains('256') || line.contains('202') || // ปี พ.ศ./ค.ศ.
+          line.contains(':')) { // เวลา
+        continue;
+      }
+
+      Iterable<RegExpMatch> matches = amountRegex.allMatches(line);
+      for (var match in matches) {
+        String cleanNum = match.group(0)!.replaceAll(',', '');
+        double? val = double.tryParse(cleanNum);
+
+        if (val != null && val > 0.0) {
+          // ถ้ามี Keyword ชัดเจน ให้ใช้ค่านี้ทันที
+          if (line.contains('บาท') || line.contains('THB') ||
+              line.contains('จำนวน') || line.contains('Amount')) {
+            return val;
+          }
+          // ถ้าไม่มี Keyword ให้เลือกยอดที่มากที่สุด (ป้องกันเศษตัวเลขจากวันที่)
+          if (bestAmount == null || val > bestAmount) {
+            bestAmount = val;
+          }
+        }
+      }
+    }
+    return bestAmount;
+  }
+
+  Future<bool> _isDuplicate(String filePath, DateTime date) async {
+    final db = await _dbHelper.database;
+    final String dateStr = date.toIso8601String();
+
+    final List<Map<String, dynamic>> res = await db.query(
+      'transactions',
+      where: '(receiptPath = ? OR date = ?) AND isDeleted = 0',
+      whereArgs: [filePath, dateStr],
+      limit: 1,
+    );
+    return res.isNotEmpty;
+  }
+
+  void dispose() => textRecognizer.close();
+}

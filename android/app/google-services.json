@@ -1,0 +1,170 @@
+{
+  "project_info": {
+    "project_number": "872052461203",
+    "project_id": "imake-vision",
+    "storage_bucket": "imake-vision.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:872052461203:android:50bda2bfccc09426a84766",
+        "android_client_info": {
+          "package_name": "com.example.mobile_ta"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "872052461203-6j78r6mquigofe89cfjl0luobgh9j17c.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA7yl9m5TqKrNKDyaytXGk7hOgNkkAbAj4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "872052461203-35i4ath5h0ok4iusvkh7abj48tpqlddd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "872052461203-863jg11c94plak66odmhhlnheob91hrk.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.projectFirebase"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:872052461203:android:1317b1d86f547744a84766",
+        "android_client_info": {
+          "package_name": "com.example.project_firebase"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "872052461203-dnqenvu2arhpdij4qabanopsemprfd0u.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.project_firebase",
+            "certificate_hash": "396eae8fac14b574aa5bad7e98bea5680388dc50"
+          }
+        },
+        {
+          "client_id": "872052461203-6j78r6mquigofe89cfjl0luobgh9j17c.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA7yl9m5TqKrNKDyaytXGk7hOgNkkAbAj4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "872052461203-35i4ath5h0ok4iusvkh7abj48tpqlddd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "872052461203-863jg11c94plak66odmhhlnheob91hrk.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.projectFirebase"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:872052461203:android:24db28634b512fb7a84766",
+        "android_client_info": {
+          "package_name": "com.imake.banchee"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "872052461203-6j78r6mquigofe89cfjl0luobgh9j17c.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA7yl9m5TqKrNKDyaytXGk7hOgNkkAbAj4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "872052461203-35i4ath5h0ok4iusvkh7abj48tpqlddd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "872052461203-863jg11c94plak66odmhhlnheob91hrk.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.projectFirebase"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:872052461203:android:1c979d1ee0084d31a84766",
+        "android_client_info": {
+          "package_name": "gaur.himanshu.youtube.goglesignin.signin"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "872052461203-eiq3mom8r34hl5h6q199opbk9itj8076.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "gaur.himanshu.youtube.goglesignin.signin",
+            "certificate_hash": "396eae8fac14b574aa5bad7e98bea5680388dc50"
+          }
+        },
+        {
+          "client_id": "872052461203-6j78r6mquigofe89cfjl0luobgh9j17c.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA7yl9m5TqKrNKDyaytXGk7hOgNkkAbAj4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "872052461203-35i4ath5h0ok4iusvkh7abj48tpqlddd.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "872052461203-863jg11c94plak66odmhhlnheob91hrk.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.projectFirebase"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

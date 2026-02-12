@@ -1,0 +1,336 @@
+
+// lib/data/services/auto_slip_manager.dart
+
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
+import 'package:flutter_tesseract_ocr/flutter_tesseract_ocr.dart';
+
+import '../models/transaction_model.dart';
+import 'database_helper.dart';
+
+class SlipCandidate {
+  final AssetEntity asset;
+  final String bankName;
+
+  SlipCandidate({required this.asset, required this.bankName});
+}
+
+class AutoSlipManager {
+  static const String _prefLastCheckKey = "last_slip_auto_scan_time";
+
+  // Mapping ชื่ออัลบั้ม -> ชื่อธนาคาร
+  static const Map<String, String> _bankMapping = {
+    "K PLUS": "KBank",
+    "SCB EASY": "SCB",
+    "Krungthai NEXT": "KTB",
+    "BualuangM": "BBL",
+    "KMA": "Krungsri",
+    "ttb touch": "TTB",
+    "MyMo": "GSB",
+  };
+
+  final DatabaseHelper _dbHelper = DatabaseHelper.instance;
+
+  Future<List<SlipCandidate>> scanForNewSlips() async {
+    final PermissionState ps = await PhotoManager.requestPermissionExtend();
+    if (!ps.isAuth && ps != PermissionState.limited) return [];
+
+    //DateTime checkSince = DateTime(2025, 1, 1);
+
+    //  ถ้าจะใช้จริงให้เปิดบรรทัดล่างนี้แทน
+     final prefs = await SharedPreferences.getInstance();
+     int lastCheckTime = prefs.getInt(_prefLastCheckKey) ?? DateTime.now().millisecondsSinceEpoch;
+     DateTime checkSince = DateTime.fromMillisecondsSinceEpoch(lastCheckTime);
+
+    List<SlipCandidate> foundSlips = [];
+    final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(type: RequestType.image);
+
+    for (var album in albums) {
+      if (_bankMapping.containsKey(album.name)) {
+        final List<AssetEntity> photos = await album.getAssetListRange(start: 0, end: 100);
+        for (var photo in photos) {
+          if (photo.createDateTime.isAfter(checkSince)) {
+            foundSlips.add(SlipCandidate(asset: photo, bankName: _bankMapping[album.name]!));
+          }
+        }
+      }
+    }
+
+    foundSlips.sort((a, b) => a.asset.createDateTime.compareTo(b.asset.createDateTime));
+    return foundSlips;
+  }
+
+  // ✅ แก้ไข: เพิ่ม parameter onProgress เพื่อส่งสถานะกลับไปหน้า UI
+  Future<int> processAndSaveSlips(List<SlipCandidate> slips, {Function(int current, int total)? onProgress}) async {
+    if (slips.isEmpty) return 0;
+
+    final prefs = await SharedPreferences.getInstance();
+    final String deviceId = prefs.getString('device_id') ?? 'unknown_device';
+    final String payerName = prefs.getString('user_name') ?? 'Me';
+
+    int savedCount = 0;
+    int current = 0;
+
+    for (var slip in slips) {
+      current++;
+      // ส่งค่าความคืบหน้ากลับไป
+      if (onProgress != null) onProgress(current, slips.length);
+
+      try {
+        final File? file = await slip.asset.file;
+        if (file != null) {
+          debugPrint("📌 [Process] Reading Slip (${slip.bankName})");
+          if (await _isDuplicate(file.path, slip.asset.createDateTime)) {
+            debugPrint("⚠️ Skip duplicate: ${slip.asset.id}");
+            continue;
+          }
+          // 1. OCR Extraction
+          String rawText = await FlutterTesseractOcr.extractText(
+            file.path,
+            language: 'tha+eng',
+            args: {"psm": "4", "preserve_interword_spaces": "1"},
+          );
+
+          // 2. Pre-process text
+          String cleanText = _cleanOcrText(rawText);
+
+          // 3. Extract Data
+          double? amount = _extractAmount(cleanText, slip.bankName);
+          String? recipient = _extractRecipient(cleanText, slip.bankName, payerName);
+
+          debugPrint("💰 Amount: $amount | 👤 Recipient: $recipient");
+
+          if (amount != null) {
+
+            // 🔥 SMART LOGIC (แบบใหม่: จำอย่างเดียว ไม่เช็คชื่อตัวเอง) 🔥
+            String category = "รายจ่าย"; // Default ถ้าไม่เคยโอนให้คนนี้
+            String? tag;
+
+            if (recipient != null) {
+              // ไปค้นประวัติว่าคนนี้เราเคยให้หมวดหมู่อะไรไว้
+              final history = await _dbHelper.getLastMappingByRecipient(recipient);
+
+              if (history['category'] != null) {
+                category = history['category']!; // ใช้ตามที่เคยบันทึกเลย
+                tag = history['tag'];
+                debugPrint("🤖 Smart Memory: Found history for $recipient -> $category");
+              }
+            }
+            // 🔥 END SMART LOGIC 🔥
+
+            final newTxn = TransactionModel(
+              id: const Uuid().v4(),
+              amount: amount,
+              date: slip.asset.createDateTime,
+              category: category,
+              note: recipient != null
+                  ? "โอนไปยัง $recipient (${slip.bankName})"
+                  : "Auto-scan (${slip.bankName})",
+              recipientName: recipient,
+              receiptPath: file.path,
+              tag: tag, // ใส่ Tag ที่จำได้
+              payerName: payerName,
+              deviceId: deviceId,
+              isSplitBill: false,
+              isSynced: false,
+              isDeleted: false,
+            );
+
+            await _dbHelper.createTransaction(newTxn);
+            savedCount++;
+          }
+        }
+      } catch (e) {
+        debugPrint("❌ Error processing slip: $e");
+        continue;
+      }
+    }
+
+    await prefs.setInt(_prefLastCheckKey, DateTime.now().millisecondsSinceEpoch);
+    return savedCount;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 🧹 Text Cleaning
+  // ---------------------------------------------------------------------------
+  String _cleanOcrText(String text) {
+    String t = text;
+    t = t.replaceAll('|', '')
+        .replaceAll('L:', '')
+        .replaceAll('©', '')
+        .replaceAll('®', '')
+        .replaceAll('รหัสอ้างอิง', '')
+        .replaceAll('จํานวน', 'จำนวน');
+
+    t = t.replaceAll('บาย', 'นาย')
+        .replaceAll('suns', 'นาย')
+        .replaceAll('uuns', 'นาย')
+        .replaceAll('น.ส.', 'น.ส. ');
+
+    t = t.replaceAll('in (0)', 'ไปที่')
+        .replaceAll('un (0)', 'ไปที่')
+        .replaceAll('1n (0)', 'ไปที่');
+
+    return t;
+  }
+  Future<bool> _isDuplicate(String filePath, DateTime date) async {
+    final db = await _dbHelper.database;
+
+    // 1. เช็คจาก Path (ตรงเป๊ะถ้าอยู่ที่เดิม)
+    final List<Map<String, dynamic>> resPath = await db.query(
+      'transactions',
+      columns: ['id'],
+      where: 'receiptPath = ? AND isDeleted = 0',
+      whereArgs: [filePath],
+      limit: 1,
+    );
+    if (resPath.isNotEmpty) return true;
+
+    // 2. เช็คจากเวลา (กันเหนียวถ้าไฟล์ถูกย้าย/เปลี่ยนชื่อ)
+    // ใช้ string ISO เพราะใน DB ของคุณใช้ TEXT
+    final String dateStr = date.toIso8601String();
+    final List<Map<String, dynamic>> resTime = await db.query(
+      'transactions',
+      columns: ['id'],
+      where: 'date = ? AND isDeleted = 0',
+      whereArgs: [dateStr],
+      limit: 1,
+    );
+    return resTime.isNotEmpty;
+  }
+  // ---------------------------------------------------------------------------
+  // 💰 Amount Extraction
+  // ---------------------------------------------------------------------------
+  double? _extractAmount(String text, String bankName) {
+    List<String> lines = text.split('\n');
+    final amountRegex = RegExp(r'[\d,]+\.\d{2}'); // บังคับทศนิยม 2 ตำแหน่ง
+
+    double? bestAmount;
+
+    for (var line in lines) {
+      // 1. กรองบรรทัดที่ไม่ใช่ยอดโอนออกทันที (ตัดยอดคงเหลือ)
+      if (line.contains('ค่าธรรมเนียม') || line.contains('Fee') ||
+          line.contains('Balance') || line.contains('คงเหลือ') ||
+          line.contains('พร้อมเพย์ ID')) {
+        continue;
+      }
+
+      // 2. ถ้าเจอบรรทัดวันที่ ให้ข้าม
+      if (line.contains('วันที่') || line.contains('Date') || line.contains('Time')) {
+        continue;
+      }
+
+      Iterable<RegExpMatch> matches = amountRegex.allMatches(line);
+      for (var match in matches) {
+        String cleanNum = match.group(0)!.replaceAll(',', '');
+        double? val = double.tryParse(cleanNum);
+
+        if (val != null && val > 0.00) {
+          // ถ้ามีคำว่า จำนวน/Amount ให้มั่นใจเลยว่าใช่
+          if (line.contains('จำนวน') || line.contains('Amount') || line.contains('ยอดเงิน')) {
+            return val;
+          }
+          // ถ้ายังไม่เจอ Keyword ให้เก็บค่าแรกที่เจอไว้ก่อน
+          if (bestAmount == null) {
+            bestAmount = val;
+          }
+        }
+      }
+    }
+    return bestAmount;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 👤 Recipient Extraction
+  // ---------------------------------------------------------------------------
+  String? _extractRecipient(String text, String bankName, String payerName) {
+    List<String> lines = text.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+
+    // Strategy A: Keyword
+    List<String> targetKeywords = ['ไปยัง', 'ไปที่', 'ถึง', 'To', 'ผู้รับเงิน', 'โอนไป', 'รับเงิน'];
+
+    for (int i = 0; i < lines.length; i++) {
+      for (var kw in targetKeywords) {
+        if (lines[i].contains(kw)) {
+          String sameLineParams = lines[i].replaceAll(kw, '').trim();
+          if (_isValidName(sameLineParams)) return _cleanName(sameLineParams);
+
+          if (i + 1 < lines.length) {
+            String nextLine = lines[i+1];
+            if (_isBankName(nextLine) && i + 2 < lines.length) {
+              return _cleanName(lines[i+2]);
+            }
+            if (_isValidName(nextLine)) return _cleanName(nextLine);
+          }
+        }
+      }
+    }
+
+    // Strategy B: Positional (Prefix) - ใช้ _isSelf แยกแยะชื่อเรา
+    List<String> nameCandidates = [];
+    List<String> prefixes = ['นาย', 'นาง', 'น.ส', 'ด.ช.', 'ด.ญ.', 'Mr', 'Mrs', 'Miss', 'Ms'];
+
+    for (var line in lines) {
+      for (var prefix in prefixes) {
+        if (line.startsWith(prefix) || line.contains(" $prefix")) {
+          if (!_isBankName(line)) {
+            nameCandidates.add(line);
+            break;
+          }
+        }
+      }
+    }
+
+    if (nameCandidates.length >= 2) {
+      if (_isSelf(nameCandidates[0], payerName)) {
+        return _cleanName(nameCandidates[1]);
+      }
+      return _cleanName(nameCandidates.last);
+    }
+    else if (nameCandidates.length == 1) {
+      if (!_isSelf(nameCandidates[0], payerName)) {
+        return _cleanName(nameCandidates[0]);
+      }
+    }
+
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 🛠 Helpers
+  // ---------------------------------------------------------------------------
+
+  bool _isValidName(String text) {
+    if (text.length < 3) return false;
+    int digitCount = text.replaceAll(RegExp(r'[^0-9]'), '').length;
+    if (digitCount > 3) return false;
+    return text.contains(RegExp(r'[ก-๙a-zA-Z]'));
+  }
+
+  bool _isBankName(String text) {
+    List<String> banks = ['กสิกร', 'ไทยพาณิชย์', 'กรุงไทย', 'กรุงเทพ', 'กรุงศรี', 'ออมสิน', 'Bank', 'KBank', 'SCB', 'BBL', 'KTB', 'GSB', 'ttb'];
+    for (var b in banks) {
+      if (text.toLowerCase().contains(b.toLowerCase())) return true;
+    }
+    return false;
+  }
+
+  bool _isSelf(String extractedName, String payerName) {
+    String c1 = extractedName.replaceAll(RegExp(r'\s'), '');
+    String c2 = payerName.replaceAll(RegExp(r'\s'), '');
+    return c1.contains(c2) || c2.contains(c1);
+  }
+
+  String _cleanName(String name) {
+    String cleaned = name.replaceAll(RegExp(r'[0-9xX\*\-]'), '')
+        .replaceAll('un (0)', '')
+        .replaceAll('(', '')
+        .replaceAll(')', '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return cleaned;
+  }
+}
